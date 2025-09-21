@@ -9,9 +9,10 @@ const getPollResults = async (pollId, trx = knex) => {
     throw errors.NOT_FOUND("Poll not found");
   }
 
+  // ✅ FIX: use created_at instead of createdAt
   const options = await trx("poll_options")
     .where("pollId", pollId)
-    .orderBy("createdAt");
+    .orderBy("created_at");
 
   const totalVotes = await trx("votes")
     .where("pollId", pollId)
@@ -44,7 +45,7 @@ const getAnalytics = async (pollId) => {
   // Get basic results
   const results = await getPollResults(pollId);
 
-  // Get demographic breakdown
+  // ✅ FIX: add GROUP BY for age breakdown
   const ageGroups = await knex("votes")
     .join("users", "votes.userId", "users.id")
     .join("poll_options", "votes.optionId", "poll_options.id")
@@ -63,7 +64,8 @@ const getAnalytics = async (pollId) => {
       END as age_group
     `)
     )
-    .select(knex.raw("COUNT(*) as count"));
+    .count("* as count")
+    .groupBy("poll_options.text", "age_group");
 
   const groupedByAge = _.groupBy(ageGroups, "age_group");
   const ageAnalysis = Object.keys(groupedByAge).map((ageGroup) => ({
@@ -86,7 +88,12 @@ const getAnalytics = async (pollId) => {
 const generateInsights = (results, ageAnalysis) => {
   const insights = [];
 
-  // Find winning option
+  if (!results.options || results.options.length === 0) {
+    insights.push("No options or votes available yet.");
+    return insights;
+  }
+
+  // Find winning option safely
   const winner = results.options.reduce((prev, current) =>
     prev.voteCount > current.voteCount ? prev : current
   );
@@ -96,7 +103,7 @@ const generateInsights = (results, ageAnalysis) => {
   );
 
   // Close race detection
-  const sortedOptions = results.options.sort(
+  const sortedOptions = [...results.options].sort(
     (a, b) => b.voteCount - a.voteCount
   );
   if (sortedOptions.length > 1) {
@@ -119,15 +126,17 @@ const generateInsights = (results, ageAnalysis) => {
     );
   }
 
-  // Age group insights (simplified for demo)
-  const dominantAgeGroup = ageAnalysis.reduce((prev, current) =>
-    (prev.votes?.length || 0) > (current.votes?.length || 0) ? prev : current
-  );
-
-  if (dominantAgeGroup.votes?.length > 0) {
-    insights.push(
-      `The ${dominantAgeGroup.ageGroup} age group shows the highest participation.`
+  // Age group insights
+  if (ageAnalysis && ageAnalysis.length > 0) {
+    const dominantAgeGroup = ageAnalysis.reduce((prev, current) =>
+      (prev.votes?.length || 0) > (current.votes?.length || 0) ? prev : current
     );
+
+    if (dominantAgeGroup.votes?.length > 0) {
+      insights.push(
+        `The ${dominantAgeGroup.ageGroup} age group shows the highest participation.`
+      );
+    }
   }
 
   return insights;

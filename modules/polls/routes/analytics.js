@@ -1,5 +1,5 @@
 const route = require("@lib/route");
-const { getPollResults, getAnalytics } = require("../controllers/poll");
+const { getPollResults, getAnalytics } = require("../controllers/analytics");
 
 const getResultsHandler = async (req, res) => {
   const result = await getPollResults(req.params.id);

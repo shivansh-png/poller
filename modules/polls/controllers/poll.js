@@ -2,10 +2,9 @@ const knex = require("@lib/knex");
 const errors = require("@lib/errors");
 const moment = require("moment");
 const _ = require("lodash");
-const {
-  getPollResults,
-  getAnalytics,
-} = require("@modules/polls/controllers/analytics");
+const { getPollResults } = require("@modules/polls/controllers/analytics");
+
+// Create Poll
 const createPoll = async (pollData) => {
   const {
     title,
@@ -18,7 +17,6 @@ const createPoll = async (pollData) => {
   } = pollData;
 
   return await knex.transaction(async (trx) => {
-    // Create poll
     const [poll] = await trx("polls")
       .insert({
         title,
@@ -31,7 +29,6 @@ const createPoll = async (pollData) => {
       })
       .returning("*");
 
-    // Create poll options
     const pollOptions = options.map((option) => ({
       pollId: poll.id,
       text: option.text,
@@ -49,50 +46,62 @@ const createPoll = async (pollData) => {
   });
 };
 
+// Get all polls (with options & pagination)
 const getAllPolls = async ({ category, status, page = 1, limit = 10 }) => {
-  let query = knex("polls")
+  // Base query (without pagination)
+  let baseQuery = knex("polls")
     .leftJoin("poll_categories", "polls.categoryId", "poll_categories.id")
     .leftJoin("users", "polls.createdBy", "users.id")
     .select(
-      "polls.*",
+      "polls.id",
+      "polls.title",
+      "polls.description",
+      "polls.status",
+      "polls.expiresAt",
+      "polls.allowMultipleVotes",
+      "polls.created_at",
       "poll_categories.name as categoryName",
       "users.firstName as creatorFirstName"
     );
 
   // Apply filters
   if (category) {
-    query = query.where("poll_categories.name", "ilike", `%${category}%`);
+    baseQuery = baseQuery.where(
+      "poll_categories.name",
+      "ilike",
+      `%${category}%`
+    );
   }
 
   if (status) {
-    query = query.where("polls.status", status);
+    baseQuery = baseQuery.where("polls.status", status);
   }
 
-  // Check for expired polls and update status
+  // ✅ Expire old polls before fetching
   await knex("polls")
     .where("expiresAt", "<", knex.fn.now())
     .where("status", "!=", "expired")
     .update({ status: "expired" });
 
-  // Get total count for pagination
-  const totalQuery = query.clone();
-  const [{ count }] = await totalQuery.count("polls.id as count");
-  const total = parseInt(count);
+  // ✅ Count query (no GROUP BY needed)
+  const totalQuery = baseQuery.clone().clearSelect().count("polls.id as count");
+  const [{ count }] = await totalQuery;
+  const total = parseInt(count, 10);
 
-  // Apply pagination
+  // ✅ Data query (paginated)
   const offset = (page - 1) * limit;
-  const polls = await query
-    .orderBy("polls.createdAt", "desc")
+  const polls = await baseQuery
+    .clone()
+    .orderBy("polls.created_at", "desc")
     .limit(limit)
     .offset(offset);
 
-  // Get options for each poll
+  // ✅ Attach options for each poll
   const pollsWithOptions = await Promise.all(
     polls.map(async (poll) => {
       const options = await knex("poll_options")
         .where("pollId", poll.id)
-        .orderBy("createdAt");
-
+        .orderBy("created_at");
       return { ...poll, options };
     })
   );
@@ -108,11 +117,14 @@ const getAllPolls = async ({ category, status, page = 1, limit = 10 }) => {
   };
 };
 
-// in your poll service file
-const polls = await knex("polls")
-  .select("id", "title", "status")
-  .orderBy("created_at", "desc");
+// Get poll summaries (lightweight for Home/Browse)
+const getPollSummaries = async () => {
+  return await knex("polls")
+    .select("id", "title", "status")
+    .orderBy("created_at", "desc"); // ✅ fix
+};
 
+// Get poll by ID
 const getPollById = async (pollId) => {
   const poll = await knex("polls")
     .leftJoin("poll_categories", "polls.categoryId", "poll_categories.id")
@@ -125,11 +137,8 @@ const getPollById = async (pollId) => {
     .where("polls.id", pollId)
     .first();
 
-  if (!poll) {
-    throw errors.NOT_FOUND("Poll not found");
-  }
+  if (!poll) throw errors.NOT_FOUND("Poll not found");
 
-  // Check if poll is expired
   if (
     poll.expiresAt &&
     moment(poll.expiresAt).isBefore(moment()) &&
@@ -139,24 +148,19 @@ const getPollById = async (pollId) => {
     poll.status = "expired";
   }
 
-  // Get poll options
   const options = await knex("poll_options")
     .where("pollId", pollId)
-    .orderBy("createdAt");
+    .orderBy("created_at"); // ✅ fix
 
   return { ...poll, options };
 };
 
+// Update Poll
 const updatePoll = async (pollId, updateData, userId) => {
   const poll = await knex("polls").where("id", pollId).first();
-
-  if (!poll) {
-    throw errors.NOT_FOUND("Poll not found");
-  }
-
-  if (poll.createdBy !== userId) {
+  if (!poll) throw errors.NOT_FOUND("Poll not found");
+  if (poll.createdBy !== userId)
     throw errors.FORBIDDEN("You can only update your own polls");
-  }
 
   const [updatedPoll] = await knex("polls")
     .where("id", pollId)
@@ -166,73 +170,45 @@ const updatePoll = async (pollId, updateData, userId) => {
   return updatedPoll;
 };
 
+// Delete Poll
 const deletePoll = async (pollId, userId) => {
   const poll = await knex("polls").where("id", pollId).first();
-
-  if (!poll) {
-    throw errors.NOT_FOUND("Poll not found");
-  }
-
-  if (poll.createdBy !== userId) {
+  if (!poll) throw errors.NOT_FOUND("Poll not found");
+  if (poll.createdBy !== userId)
     throw errors.FORBIDDEN("You can only delete your own polls");
-  }
 
   await knex("polls").where("id", pollId).del();
 };
 
+// Vote
 const votePoll = async (pollId, optionId, userId, ipAddress) => {
   return await knex.transaction(async (trx) => {
-    // Get poll details
     const poll = await trx("polls").where("id", pollId).first();
+    if (!poll) throw errors.NOT_FOUND("Poll not found");
 
-    if (!poll) {
-      throw errors.NOT_FOUND("Poll not found");
-    }
-
-    // Check if poll is expired
     if (poll.expiresAt && moment(poll.expiresAt).isBefore(moment())) {
       await trx("polls").where("id", pollId).update({ status: "expired" });
       throw errors.POLL_EXPIRED();
     }
-
-    if (poll.status !== "active") {
+    if (poll.status !== "active")
       throw errors.FORBIDDEN("This poll is not active");
-    }
 
-    // Check if option exists
     const option = await trx("poll_options")
       .where("id", optionId)
-      .where("pollId", pollId)
+      .andWhere("pollId", pollId)
       .first();
+    if (!option) throw errors.NOT_FOUND("Poll option not found");
 
-    if (!option) {
-      throw errors.NOT_FOUND("Poll option not found");
-    }
-
-    // Check for duplicate vote
     const existingVote = await trx("votes")
       .where("pollId", pollId)
-      .where("userId", userId)
+      .andWhere("userId", userId)
       .first();
+    if (existingVote && !poll.allowMultipleVotes) throw errors.DUPLICATE_VOTE();
 
-    if (existingVote && !poll.allowMultipleVotes) {
-      throw errors.DUPLICATE_VOTE();
-    }
-
-    // Record vote
-    await trx("votes").insert({
-      pollId,
-      optionId,
-      userId,
-      ipAddress,
-    });
-
-    // Update vote count
+    await trx("votes").insert({ pollId, optionId, userId, ipAddress });
     await trx("poll_options").where("id", optionId).increment("voteCount", 1);
 
-    // Get updated results
-    const results = await getPollResults(pollId, trx);
-    return results;
+    return await getPollResults(pollId, trx);
   });
 };
 
