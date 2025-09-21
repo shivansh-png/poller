@@ -13,12 +13,12 @@ const {
   updatePoll,
   deletePoll,
   votePoll,
-  getPollResults,
-  getAnalytics,
+  getPollSummaries,
 } = require("../controllers/poll");
 
 const createPollHandler = async (req, res) => {
-  validate(req.body, createPollSchema);
+  console.log("body...", req.body);
+  //validate(req.body, createPollSchema);
   const result = await createPoll({ ...req.body, createdBy: req.user.id });
 
   res.status(201).json({
@@ -119,9 +119,19 @@ const getAnalyticsHandler = async (req, res) => {
   });
 };
 
+const getPollSummariesHandler = async (req, res) => {
+  const result = await getPollSummaries();
+  res.json({
+    isSuccess: true,
+    status: "Success",
+    polls: result,
+  });
+};
+
 module.exports = [
   route.post("/polls", createPollHandler),
   route.get("/polls", getAllPollsHandler),
+  route.get("/polls/summaries", getPollSummariesHandler),
   route.get("/polls/:id", getPollHandler),
   route.put("/polls/:id", updatePollHandler),
   route.delete("/polls/:id", deletePollHandler),

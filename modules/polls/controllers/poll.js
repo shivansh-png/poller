@@ -2,7 +2,10 @@ const knex = require("@lib/knex");
 const errors = require("@lib/errors");
 const moment = require("moment");
 const _ = require("lodash");
-
+const {
+  getPollResults,
+  getAnalytics,
+} = require("@modules/polls/controllers/analytics");
 const createPoll = async (pollData) => {
   const {
     title,
@@ -104,6 +107,11 @@ const getAllPolls = async ({ category, status, page = 1, limit = 10 }) => {
     },
   };
 };
+
+// in your poll service file
+const polls = await knex("polls")
+  .select("id", "title", "status")
+  .orderBy("created_at", "desc");
 
 const getPollById = async (pollId) => {
   const poll = await knex("polls")
@@ -235,4 +243,5 @@ module.exports = {
   updatePoll,
   deletePoll,
   votePoll,
+  getPollSummaries,
 };
